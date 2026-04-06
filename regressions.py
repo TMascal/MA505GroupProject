@@ -60,6 +60,40 @@ class RegressionModel:
         bk.add_forbidden_by_pattern("high_lethality", ".*")
         return bk
 
+    def linear_regression(self, x_vars: list[str], y_var: str, include_flight_type: bool = True):
+        """Perform OLS linear regression with one or more predictors.
+
+        Multiple x_vars lets you control for confounders to close backdoor paths.
+
+        Args:
+            x_vars: Predictor variable names (column names after encoding).
+            y_var:  Response variable name.
+            include_flight_type: Passed through to _prepare_data.
+
+        Returns:
+            The fitted statsmodels RegressionResults object.
+        """
+        data, feature_cols = self._prepare_data(include_flight_type)
+        df = pd.DataFrame(data, columns=feature_cols)
+
+        # Also expose raw FatalityRate as a continuous option
+        if "FatalityRate" in self.df.columns:
+            rate = pd.to_numeric(self.df["FatalityRate"], errors="coerce")
+            df["FatalityRate"] = rate.reindex(df.index)
+
+        available = list(df.columns)
+        for var in x_vars + [y_var]:
+            if var not in df.columns:
+                raise ValueError(f"'{var}' not found. Available: {available}")
+
+        subset = df[x_vars + [y_var]].dropna()
+        X = sm.add_constant(subset[x_vars].to_numpy())
+        y = subset[y_var].to_numpy()
+
+        fitted = sm.OLS(y, X).fit()
+        print(fitted.summary(xname=["const"] + x_vars, yname=y_var))
+        return fitted
+
     def derive_cpdag(self, alpha: float = 0.05, include_flight_type: bool = True) -> CausalGraph:
         """Run the PC algorithm to produce a CPDAG (Markov Equivalence Class).
 

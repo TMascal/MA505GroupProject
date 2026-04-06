@@ -1,5 +1,8 @@
+# Timothy Mascal
+# April 2, 2026
+# Created with the Aid of Claude Code
+
 import pandas as pd
-from collections import defaultdict
 
 CATEGORIES = [
     "sabotage", "shot_down", "fire", "fuel", "weather",

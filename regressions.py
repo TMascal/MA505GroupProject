@@ -56,6 +56,7 @@ class RegressionModel:
         bk = BackgroundKnowledge()
         bk.add_forbidden_by_pattern(".*", "weather")
         bk.add_forbidden_by_pattern(".*", "is_military")
+        bk.add_forbidden_by_pattern("high_lethality", ".*")
         return bk
 
     def derive_cpdag(self, alpha: float = 0.05, include_flight_type: bool = True) -> CausalGraph:

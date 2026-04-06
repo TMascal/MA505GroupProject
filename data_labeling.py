@@ -32,8 +32,8 @@ class AccidentCauseClassifier:
     # The first cause whose keywords match wins.
     CAUSE_RULES: list[tuple[str, list[str]]] = [
         ("sabotage",      ["hijacked", "hijackers", "hijacker", "explosive", "bomb", "dynamite",
-                           "sabotage", "suicide", "stolen"]),
-        ("shot_down",     ["shot down", "shot by", "enemy fire", "anti-aircraft", "shot by fighter", "fighter fire"]),
+                           "sabotage", "suicide", "stolen", "grenade"]),
+        ("shot_down",     ["shot down", "shot by", "enemy fire", "anti-aircraft", "shot by fighter", "fighter fire", "gunfire", "bullet"]),
         ("fire",          ["fire", "flames", "burned", "burnt", "exploded", "explosion"]),
         ("fuel",          ["fuel exhaustion", "fuel starvation", "ran out of fuel", "low fuel", "out of fuel"]),
         ("mechanical",    ["engine failure", "engine failed", "mechanical failure",
@@ -43,7 +43,7 @@ class AccidentCauseClassifier:
         ("weather",       ["weather", "fog", "rain", "visibility", "adverse",
                            "conditions", "vfr", "thunderstorm", "ice", "wind", "storm", "snow",
                            "turbulence", "windshear", "crosswind", "rainstorm", "snowstorm", "clouds"]),
-        ("collision",     ["mid-air collision", "midair collision", "collided with another", "collided", "mid-air", "midair"]),
+        ("collision",     ["mid-air collision", "midair collision", "collided with another aircraft", "collided with another airplane", "collided"]),
         ("cfit",          ["mountain", "mountains", "mountainside", "mount", "mountainous", "terrain",
                            "trees", "struck", "hillside", "hill", "controlled flight",
                            "ocean", "lake", "river", "sea", "wooded", "jungle", "mt", "ravine",
@@ -78,6 +78,26 @@ class AccidentCauseClassifier:
     def classify_series(self, series: pd.Series) -> pd.Series:
         return series.map(self.classify)
 
+    _MILITARY_PATTERN = re.compile(
+        r'\bmilitary\b|air force|army|navy|marine corps|coast guard|royal air force|'
+        r'royal australian|royal canadian|royal new zealand|luftwaffe|'
+        r'air corps|national guard|air command',
+        re.IGNORECASE,
+    )
+    _CIVILIAN_PATTERN = re.compile(r'\bprivate\b|\bair taxi\b', re.IGNORECASE)
+
+    def classify_operator(self, operator: str) -> str:
+        if not isinstance(operator, str) or not operator.strip():
+            return "unknown"
+        if self._MILITARY_PATTERN.search(operator):
+            return "military"
+        if self._CIVILIAN_PATTERN.search(operator):
+            return "civilian"
+        return "commercial"
+
+    def classify_operator_series(self, series: pd.Series) -> pd.Series:
+        return series.map(self.classify_operator)
+
     def word_frequency(self, series: pd.Series, top_n: int = 100) -> list[tuple[str, int]]:
         counts = Counter()
         for text in series.dropna():
@@ -92,12 +112,19 @@ if __name__ == "__main__":
 
     classifier = AccidentCauseClassifier()
 
+    aboard      = pd.to_numeric(df["Aboard"],      errors="coerce")
+    fatalities  = pd.to_numeric(df["Fatalities"],  errors="coerce")
+    ground      = pd.to_numeric(df["Ground"],      errors="coerce").fillna(0)
+    fatality_rate = (fatalities + ground) / aboard  # NaN when Aboard is 0 or missing
+
     labeled = pd.DataFrame({
-        "Date":     df["Date"],
-        "Time":     df["Time"],
-        "Location": df["Location"],
-        "Operator": df["Operator"],
-        "Cause":    classifier.classify_series(df["Summary"]),
+        "Date":          df["Date"],
+        "Time":          df["Time"],
+        "Location":      df["Location"],
+        "Operator":      df["Operator"],
+        "FlightType":    classifier.classify_operator_series(df["Operator"]),
+        "Cause":         classifier.classify_series(df["Summary"]),
+        "FatalityRate":  fatality_rate,
     })
 
     labeled.to_csv("data/labeled_accidents.csv", index=False)

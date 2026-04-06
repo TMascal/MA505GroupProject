@@ -27,6 +27,7 @@ class RegressionModel:
             for c in str(cell).split(","):
                 all_causes.add(c.strip().lower())
         all_causes.discard("unknown")
+        all_causes.discard("undetermined")
 
         for cause in sorted(all_causes):
             df[cause] = df["Cause"].apply(

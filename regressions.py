@@ -85,7 +85,7 @@ class RegressionModel:
                        background_knowledge=bk, show_progress=False, node_names=feature_cols)
         return graph
 
-    def render_mec(self, graph: GeneralGraph | CausalGraph, filename: str = "mec") -> graphviz.Digraph:
+    def render_mec(self, graph: GeneralGraph | CausalGraph, filename: str = "output/mec") -> graphviz.Digraph:
         """Render a PAG (from FCI) to a PNG file.
 
         PAG adjacency matrix encoding — graph[i][j] is the mark AT node i:
@@ -130,7 +130,7 @@ class RegressionModel:
         dot.render(filename, format="png", cleanup=True)
         return dot
 
-    def build_scm(self, edges: str, filename: str = "scm") -> graphviz.Digraph:
+    def build_scm(self, edges: str, filename: str = "output/scm") -> graphviz.Digraph:
         """Generate a SCM diagram from a CSV edge string like 'A>B, B>C, C>A'.
 
         Renders the graph to a file and returns the Digraph object.
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     node_names = [node.get_name() for node in cpdag.G.get_nodes()]
     print("Node labels:", node_names)
     print("CPDAG adjacency matrix:\n", cpdag.G.graph)
-    model.render_mec(cpdag, filename="cpdag")
+    model.render_mec(cpdag, filename="output/cpdag")
 
     # FCI — PAG (Partial Ancestral Graph, allows latent confounders)
     print("\nDeriving PAG via FCI algorithm...")
@@ -171,4 +171,4 @@ if __name__ == "__main__":
     node_names = [node.get_name() for node in pag.get_nodes()]
     print("Node labels:", node_names)
     print("PAG adjacency matrix:\n", pag.graph)
-    model.render_mec(pag, filename="pag")
+    model.render_mec(pag, filename="output/pag")

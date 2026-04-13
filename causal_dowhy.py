@@ -43,7 +43,7 @@ from causallearn.search.ConstraintBased.FCI import fci
 from causallearn.utils.PCUtils.BackgroundKnowledge import BackgroundKnowledge
 
 
-def prepare_data(exclude_solo: bool = True) -> tuple[pd.DataFrame, list[str]]:
+def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> tuple[pd.DataFrame, list[str]]:
     """Load and encode data for causal discovery.
 
     Subregion is integer-coded (0–N) so FCI treats it as a single node.
@@ -77,21 +77,24 @@ def prepare_data(exclude_solo: bool = True) -> tuple[pd.DataFrame, list[str]]:
         )
     feature_cols = sorted(all_causes)
 
-    # Flight type — 3-class integer: military=0, commercial=1, civilian=2
-    ft_map = {"military": 0, "commercial": 1, "civilian": 2}
-    df["flight_type"] = df["FlightType"].str.lower().str.strip().map(ft_map)
-    feature_cols = ["flight_type"] + feature_cols
+    # Flight type — binary is_military
+    df["is_military"] = (df["FlightType"].str.lower().str.strip() == "military").astype(int)
+    feature_cols = ["is_military"] + feature_cols
 
     # Subregion — integer coded
     codes = {s: i for i, s in enumerate(sorted(df["Subregion"].unique()))}
     df["subregion"] = df["Subregion"].map(codes)
     feature_cols = ["subregion"] + feature_cols
 
-    # Outcome — continuous normalized fatality rate
-    df["fatality_rate"] = pd.to_numeric(df["FatalityRate"], errors="coerce")
-    feature_cols = feature_cols + ["fatality_rate"]
+    # Outcome — binary: 1 = high fatality rate (>0.5), 0 = low fatality rate (<=0.5)
+    rate = pd.to_numeric(df["FatalityRate"], errors="coerce")
+    df["high_lethality"] = (rate > 0.5).astype(float)
+    df.loc[rate.isna(), "high_lethality"] = np.nan
+    feature_cols = feature_cols + ["high_lethality"]
 
     data_df = df[feature_cols].dropna().reset_index(drop=True)
+    if max_samples is not None and len(data_df) > max_samples:
+        data_df = data_df.sample(max_samples, random_state=42).reset_index(drop=True)
     return data_df, feature_cols
 
 
@@ -110,15 +113,15 @@ def build_background_knowledge() -> BackgroundKnowledge:
     bk.add_forbidden_by_pattern("cfit",        "subregion")
     bk.add_forbidden_by_pattern("shot_down",   "subregion")
     bk.add_forbidden_by_pattern("pilot_error", "subregion")
-    # flight_type is exogenous — nothing in the graph causes it
-    bk.add_forbidden_by_pattern(".*", "flight_type")
+    # is_military is exogenous — nothing in the graph causes it
+    bk.add_forbidden_by_pattern(".*", "is_military")
     # pilot_error → cfit is required; cfit → pilot_error is impossible
     bk.add_required_by_pattern("pilot_error", "cfit")
     bk.add_forbidden_by_pattern("cfit", "pilot_error")
-    # fatality_rate is the outcome — it cannot cause anything
-    bk.add_forbidden_by_pattern("fatality_rate", ".*")
-    # mechanical → fatality_rate (not the reverse)
-    bk.add_forbidden_by_pattern("fatality_rate", "mechanical_trouble")
+    # high_lethality is the outcome — it cannot cause anything
+    bk.add_forbidden_by_pattern("high_lethality", ".*")
+    # mechanical → high_lethality (not the reverse)
+    bk.add_forbidden_by_pattern("high_lethality", "mechanical_trouble")
     return bk
 
 
@@ -221,12 +224,12 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
 
 
 if __name__ == "__main__":
-    OUTCOME = "fatality_rate"
+    OUTCOME = "high_lethality"
     TREATMENTS = ["cfit", "collision", "fire", "fuel", "mechanical",
                   "pilot_error", "sabotage", "shot_down", "weather"]
 
     print("Loading and encoding data...")
-    data_df, feature_cols = prepare_data(exclude_solo=True)
+    data_df, feature_cols = prepare_data(exclude_solo=True, max_samples=5000)
     print(f"  {len(data_df)} rows, {len(feature_cols)} nodes: {feature_cols}\n")
 
     PAG_CACHE = "output/pag_kci.pkl"
@@ -243,18 +246,14 @@ if __name__ == "__main__":
         pag = None
 
     if pag is None:
-        print("Running FCI with KCI to learn PAG (accounts for latent confounders)...")
-        print("  Note: KCI is slow — this may take several minutes.\n")
+        print("Running FCI with chi-square to learn PAG (accounts for latent confounders)...")
         pag, _ = fci(
             data_df.to_numpy(dtype=float),
-            independence_test_method="kci",
+            independence_test_method="chisq",
             alpha=0.05,
             background_knowledge=bk,
             show_progress=True,
             node_names=feature_cols,
-            kernelX="Gaussian",
-            kernelY="Gaussian",
-            approx=True,
         )
         with open(PAG_CACHE, "wb") as f:
             pickle.dump((pag, feature_cols), f)

@@ -4,8 +4,7 @@
 #
 # Causal analysis using DoWhy for identification and estimation.
 # FCI (via causal-learn) is used for discovery to account for possible
-# unobserved confounders — it produces a PAG rather than a CPDAG, so
-# bidirected edges (i ↔ j) are preserved as latent common causes.
+# unobserved confounders — it produces a PAG.
 #
 # --- Assumptions encoded as background knowledge ---
 #
@@ -19,8 +18,12 @@
 # Causal ordering:
 #   - pilot_error  → cfit  (required): controlled flight into terrain is a
 #                    downstream consequence of pilot error, never the cause.
+#   - pilot_error  → mechanical (required): improper operation can damage
+#                    equipment; mechanical failure does not cause pilot error.
 #   - subregion    → pilot_error, shot_down, cfit, weather  (not the reverse).
 #   - mechanical   → high_lethality  (not the reverse).
+#   - sabotage     → cfit: disabling aircraft can cause cfit.
+#   - sabotage     → fire: explosives/arson cause fire.
 #
 # Outcome:
 #   - high_lethality : binary outcome (FatalityRate > 0.5); nothing in the
@@ -48,11 +51,8 @@ def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> t
     """Load and encode data for causal discovery.
 
     Subregion is integer-coded (0–N) so FCI treats it as a single node.
-    FlightType is integer-coded as 3 classes: military=0, commercial=1, civilian=2.
     Causes are binary presence indicators.
-    fatality_rate is the continuous normalized fatality rate (fatalities / aboard).
-    KCI handles mixed continuous and categorical variables without distributional
-    assumptions, so no binning or binarization of the outcome is needed.
+    high_lethality is a binary outcome: 1 if FatalityRate > 0.5, else 0.
     """
     df = pd.read_csv("data/labeled_accidents.csv")
 
@@ -119,6 +119,13 @@ def build_background_knowledge() -> BackgroundKnowledge:
     # pilot_error → cfit is required; cfit → pilot_error is impossible
     bk.add_required_by_pattern("pilot_error", "cfit")
     bk.add_forbidden_by_pattern("cfit", "pilot_error")
+    # sabotage → cfit (disabling instruments/controls leads to CFIT)
+    # bk.add_required_by_pattern("sabotage", "cfit")
+    bk.add_forbidden_by_pattern("cfit", "sabotage")
+    # sabotage → fire (explosives/arson cause fire; fire doesn't cause sabotage)
+    bk.add_forbidden_by_pattern("fire", "sabotage")
+    # pilot_error → mechanical (improper operation damages equipment; mechanical failure doesn't cause pilot error)
+    bk.add_forbidden_by_pattern("mechanical", "pilot_error")
     # high_lethality is the outcome — it cannot cause anything
     bk.add_forbidden_by_pattern("high_lethality", ".*")
     # mechanical → high_lethality (not the reverse)
@@ -129,18 +136,22 @@ def build_background_knowledge() -> BackgroundKnowledge:
 def pag_to_dowhy_graph(nodes: list[str], adj: np.ndarray) -> nx.DiGraph:
     """Convert a causal-learn PAG adjacency matrix to a networkx DiGraph for DoWhy.
 
-    PAG adjacency matrix encoding — adj[i][j] is the mark AT node i:
+    causal-learn convention: adj[i][j] is the mark AT node i on the edge between
+    i and j.
+
       -1  tail  (—)
        1  arrowhead  (>)
        2  circle  (o)
 
     Conversion rules:
-      tail — arrowhead  (adj[i][j]==-1, adj[j][i]==1)  →  directed edge i → j
-      arrowhead — arrowhead (both==1)                   →  bidirected i ↔ j:
-            represented as a latent node L_i_j with edges L→i and L→j
-      All other mark combinations (circles, undirected) are skipped with a warning,
-      as they represent genuine uncertainty that cannot be collapsed to a DAG.
+      mark_at_i=-1, mark_at_j=1  →  directed edge i → j
+      mark_at_i=1,  mark_at_j=1  →  bidirected i ↔ j: latent node U with U→i and U→j
+      All other combinations (circle marks, undirected) are skipped.
     """
+    from causallearn.graph.Endpoint import Endpoint
+    assert Endpoint.TAIL.value == -1 and Endpoint.ARROW.value == 1 and Endpoint.CIRCLE.value == 2, \
+        "causal-learn Endpoint enum values have changed; review decoder."
+
     dag = nx.DiGraph()
     dag.add_nodes_from(nodes)
 
@@ -150,7 +161,7 @@ def pag_to_dowhy_graph(nodes: list[str], adj: np.ndarray) -> nx.DiGraph:
             mi = adj[i][j]  # mark at node i
             mj = adj[j][i]  # mark at node j
             if mi == 0 and mj == 0:
-                continue  # no edge
+                continue
             elif mi == -1 and mj == 1:
                 dag.add_edge(nodes[i], nodes[j])
             elif mi == 1 and mj == -1:
@@ -161,11 +172,10 @@ def pag_to_dowhy_graph(nodes: list[str], adj: np.ndarray) -> nx.DiGraph:
                 dag.add_node(latent, observed=False)
                 dag.add_edge(latent, nodes[i])
                 dag.add_edge(latent, nodes[j])
-            else:
-                print(f"  [warn] Skipping uncertain edge between '{nodes[i]}' and "
-                      f"'{nodes[j]}' (marks: {mi}, {mj})")
+            # all other mark combinations (circle marks) skipped
 
     return dag
+
 
 
 def render_graph(dag: nx.DiGraph, filename: str = "output/dowhy/pag") -> graphviz.Digraph:
@@ -213,44 +223,50 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
 
     Returns the OLS coefficient, or None if identification or estimation failed.
     """
-    model = CausalModel(
-        data=data_df,
-        treatment=treatment,
-        outcome=outcome,
-        graph=dag,
-    )
-    identified = model.identify_effect(proceed_when_unidentifiable=True)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*assumed unobserved.*", category=UserWarning)
+        model = CausalModel(data=data_df, treatment=treatment, outcome=outcome, graph=dag)
+        identified = model.identify_effect(proceed_when_unidentifiable=True)
 
-    backdoor_sets = identified.backdoor_variables
-    if not backdoor_sets:
-        print(f"  No valid backdoor adjustment set found for '{treatment}'.")
+    backdoor_sets   = identified.backdoor_variables
+    frontdoor_sets  = identified.frontdoor_variables
+    iv_vars         = identified.instrumental_variables
+
+    if backdoor_sets:
+        first_key = next(iter(backdoor_sets))
+        adjustment_vars = list(backdoor_sets[first_key])
+        regressors = [treatment] + adjustment_vars
+        try:
+            X = sm.add_constant(data_df[regressors])
+            y = data_df[outcome]
+            result = sm.OLS(y, X).fit()
+            coef = result.params[treatment]
+            pval = result.pvalues[treatment]
+            conf = result.conf_int().loc[treatment]
+            print(f"  OLS coef({treatment}) = {coef:+.4f}  "
+                  f"95% CI [{conf[0]:+.4f}, {conf[1]:+.4f}]  p={pval:.4f}  [backdoor]")
+            print(f"  Adjustment set: {adjustment_vars}")
+            return coef
+        except Exception as e:
+            print(f"  Estimation failed: {e}")
+            return None
+    elif frontdoor_sets:
+        first_key = next(iter(frontdoor_sets))
+        mediators = list(frontdoor_sets[first_key])
+        print(f"  Identified via front-door (mediators: {mediators}) — not estimated via OLS.")
         return None
-
-    # backdoor_variables is a dict keyed from 1; grab the first valid set
-    first_key = next(iter(backdoor_sets))
-    adjustment_vars = list(backdoor_sets[first_key])
-    regressors = [treatment] + adjustment_vars
-
-    try:
-        X = sm.add_constant(data_df[regressors])
-        y = data_df[outcome]
-        result = sm.OLS(y, X).fit()
-        coef = result.params[treatment]
-        pval = result.pvalues[treatment]
-        conf = result.conf_int().loc[treatment]
-        print(f"  OLS coef({treatment}) = {coef:+.4f}  "
-              f"95% CI [{conf[0]:+.4f}, {conf[1]:+.4f}]  p={pval:.4f}")
-        print(f"  Adjustment set: {adjustment_vars}")
-        return coef
-    except Exception as e:
-        print(f"  Estimation failed: {e}")
+    elif iv_vars:
+        first_key = next(iter(iv_vars))
+        instruments = list(iv_vars[first_key])
+        print(f"  Identified via IV (instruments: {instruments}) — not estimated via OLS.")
         return None
-
-
+    else:
+        print(f"  Not identified -- no valid backdoor, front-door, or IV set found.")
+        return None
 
 
 if __name__ == "__main__":
-    # FCI discovers structure on binary high_lethality; regression uses continuous fatality_rate.
     OUTCOME = "high_lethality"
     TREATMENTS = ["cfit", "collision", "fire", "fuel", "mechanical",
                   "pilot_error", "sabotage", "shot_down", "weather"]

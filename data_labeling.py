@@ -8,7 +8,6 @@
 # Output: A pandas dataframe that can classify each accident by cause
 
 import re
-from collections import Counter
 
 import pandas as pd
 
@@ -97,14 +96,6 @@ class AccidentCauseClassifier:
 
     def classify_operator_series(self, series: pd.Series) -> pd.Series:
         return series.map(self.classify_operator)
-
-    def word_frequency(self, series: pd.Series, top_n: int = 100) -> list[tuple[str, int]]:
-        counts = Counter()
-        for text in series.dropna():
-            tokens = re.findall(r'\b[a-z]+\b', text.lower())
-            counts.update(t for t in tokens if t not in self.STOPWORDS)
-        return counts.most_common(top_n)
-
 
 class LocationSubregionClassifier:
     """Maps Location strings to UN M49 subregions (22-subregion standard).

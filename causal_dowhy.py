@@ -86,13 +86,14 @@ def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> t
     df["subregion"] = df["Subregion"].map(codes)
     feature_cols = ["subregion"] + feature_cols
 
-    # Outcome — binary: 1 = high fatality rate (>0.5), 0 = low fatality rate (<=0.5)
+    # Outcome — binary for FCI structure learning, continuous for regression
     rate = pd.to_numeric(df["FatalityRate"], errors="coerce")
     df["high_lethality"] = (rate > 0.5).astype(float)
     df.loc[rate.isna(), "high_lethality"] = np.nan
+    df["fatality_rate"] = rate
     feature_cols = feature_cols + ["high_lethality"]
 
-    data_df = df[feature_cols].dropna().reset_index(drop=True)
+    data_df = df[feature_cols + ["fatality_rate"]].dropna().reset_index(drop=True)
     if max_samples is not None and len(data_df) > max_samples:
         data_df = data_df.sample(max_samples, random_state=42).reset_index(drop=True)
     return data_df, feature_cols

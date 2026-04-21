@@ -38,6 +38,7 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import graphviz
+import statsmodels.api as sm
 from dowhy import CausalModel
 from causallearn.search.ConstraintBased.FCI import fci
 from causallearn.utils.PCUtils.BackgroundKnowledge import BackgroundKnowledge
@@ -203,9 +204,14 @@ def render_graph(dag: nx.DiGraph, filename: str = "output/dowhy/pag") -> graphvi
 
 def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
                            treatment: str, outcome: str) -> float | None:
-    """Run DoWhy identification and linear regression estimation for one treatment.
+    """Use DoWhy to identify the backdoor adjustment set, then estimate via OLS.
 
-    Returns the estimated total causal effect, or None if estimation failed.
+    DoWhy is used only for identification — finding the valid set of confounders
+    to condition on. The OLS coefficient on the treatment variable (holding the
+    adjustment set constant) is returned. This is the standard partial regression
+    coefficient, not an ATE estimand.
+
+    Returns the OLS coefficient, or None if identification or estimation failed.
     """
     model = CausalModel(
         data=data_df,
@@ -214,15 +220,28 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
         graph=dag,
     )
     identified = model.identify_effect(proceed_when_unidentifiable=True)
-    print(identified)
+
+    backdoor_sets = identified.backdoor_variables
+    if not backdoor_sets:
+        print(f"  No valid backdoor adjustment set found for '{treatment}'.")
+        return None
+
+    # backdoor_variables is a dict keyed from 1; grab the first valid set
+    first_key = next(iter(backdoor_sets))
+    adjustment_vars = list(backdoor_sets[first_key])
+    regressors = [treatment] + adjustment_vars
 
     try:
-        estimate = model.estimate_effect(
-            identified,
-            method_name="backdoor.linear_regression",
-        )
-        print(f"  Estimated total effect of '{treatment}' on '{outcome}': {estimate.value:.4f}")
-        return estimate.value
+        X = sm.add_constant(data_df[regressors])
+        y = data_df[outcome]
+        result = sm.OLS(y, X).fit()
+        coef = result.params[treatment]
+        pval = result.pvalues[treatment]
+        conf = result.conf_int().loc[treatment]
+        print(f"  OLS coef({treatment}) = {coef:+.4f}  "
+              f"95% CI [{conf[0]:+.4f}, {conf[1]:+.4f}]  p={pval:.4f}")
+        print(f"  Adjustment set: {adjustment_vars}")
+        return coef
     except Exception as e:
         print(f"  Estimation failed: {e}")
         return None
@@ -231,6 +250,7 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
 
 
 if __name__ == "__main__":
+    # FCI discovers structure on binary high_lethality; regression uses continuous fatality_rate.
     OUTCOME = "high_lethality"
     TREATMENTS = ["cfit", "collision", "fire", "fuel", "mechanical",
                   "pilot_error", "sabotage", "shot_down", "weather"]
@@ -255,7 +275,7 @@ if __name__ == "__main__":
     if pag is None:
         print("Running FCI with chi-square to learn PAG (accounts for latent confounders)...")
         pag, _ = fci(
-            data_df.to_numpy(dtype=float),
+            data_df[feature_cols].to_numpy(dtype=float),
             independence_test_method="chisq",
             alpha=0.05,
             background_knowledge=bk,
@@ -279,7 +299,7 @@ if __name__ == "__main__":
     total_effects = {}
     for treatment in TREATMENTS:
         print(f"{'='*60}")
-        print(f"Treatment: {treatment} → {OUTCOME}")
+        print(f"Treatment: {treatment} -> {OUTCOME}")
         print(f"{'='*60}")
         total_effects[treatment] = identify_and_estimate(dag, data_df, treatment, OUTCOME)
         print()
@@ -287,10 +307,10 @@ if __name__ == "__main__":
     print(f"{'='*60}")
     print("TOTAL CAUSAL IMPACT SUMMARY")
     print(f"{'='*60}")
-    print(f"  {'Cause':<15} {'Total Effect':>14}")
-    print(f"  {'-'*30}")
+    print(f"  {'Cause':<15} {'OLS coef (high_lethality)':>26}")
+    print(f"  {'-'*42}")
     for treatment, effect in sorted(total_effects.items(),
                                     key=lambda x: x[1] if x[1] is not None else 0,
                                     reverse=True):
         val = f"{effect:>+.4f}" if effect is not None else "   n/a"
-        print(f"  {treatment:<15} {val:>14}")
+        print(f"  {treatment:<15} {val:>22}")

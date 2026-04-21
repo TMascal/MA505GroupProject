@@ -202,8 +202,11 @@ def render_graph(dag: nx.DiGraph, filename: str = "output/dowhy/pag") -> graphvi
 
 
 def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
-                           treatment: str, outcome: str) -> None:
-    """Run DoWhy identification and linear regression estimation for one treatment."""
+                           treatment: str, outcome: str) -> float | None:
+    """Run DoWhy identification and linear regression estimation for one treatment.
+
+    Returns the estimated total causal effect, or None if estimation failed.
+    """
     model = CausalModel(
         data=data_df,
         treatment=treatment,
@@ -218,9 +221,13 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
             identified,
             method_name="backdoor.linear_regression",
         )
-        print(f"  Estimated effect of '{treatment}' on '{outcome}': {estimate.value:.4f}")
+        print(f"  Estimated total effect of '{treatment}' on '{outcome}': {estimate.value:.4f}")
+        return estimate.value
     except Exception as e:
         print(f"  Estimation failed: {e}")
+        return None
+
+
 
 
 if __name__ == "__main__":
@@ -269,9 +276,21 @@ if __name__ == "__main__":
     print(f"  Latent nodes   : {latent}\n")
     render_graph(dag, filename="output/dowhy/pag")
 
+    total_effects = {}
     for treatment in TREATMENTS:
         print(f"{'='*60}")
         print(f"Treatment: {treatment} → {OUTCOME}")
         print(f"{'='*60}")
-        identify_and_estimate(dag, data_df, treatment, OUTCOME)
+        total_effects[treatment] = identify_and_estimate(dag, data_df, treatment, OUTCOME)
         print()
+
+    print(f"{'='*60}")
+    print("TOTAL CAUSAL IMPACT SUMMARY")
+    print(f"{'='*60}")
+    print(f"  {'Cause':<15} {'Total Effect':>14}")
+    print(f"  {'-'*30}")
+    for treatment, effect in sorted(total_effects.items(),
+                                    key=lambda x: x[1] if x[1] is not None else 0,
+                                    reverse=True):
+        val = f"{effect:>+.4f}" if effect is not None else "   n/a"
+        print(f"  {treatment:<15} {val:>14}")

@@ -232,7 +232,9 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
 
 
 if __name__ == "__main__":
-    OUTCOME = "high_lethality"
+    # FCI discovers structure on binary high_lethality; regression uses continuous fatality_rate.
+    FCI_OUTCOME  = "high_lethality"
+    REG_OUTCOME  = "fatality_rate"
     TREATMENTS = ["cfit", "collision", "fire", "fuel", "mechanical",
                   "pilot_error", "sabotage", "shot_down", "weather"]
 
@@ -256,7 +258,7 @@ if __name__ == "__main__":
     if pag is None:
         print("Running FCI with chi-square to learn PAG (accounts for latent confounders)...")
         pag, _ = fci(
-            data_df.to_numpy(dtype=float),
+            data_df[feature_cols].to_numpy(dtype=float),
             independence_test_method="chisq",
             alpha=0.05,
             background_knowledge=bk,
@@ -271,27 +273,35 @@ if __name__ == "__main__":
 
     print("Converting PAG to DoWhy graph...")
     dag = pag_to_dowhy_graph(feature_cols, pag.graph)
+
+    # Rename the binary discovery node to the continuous regression outcome so
+    # the graph topology is preserved but DoWhy regresses against fatality_rate.
+    nx.relabel_nodes(dag, {FCI_OUTCOME: REG_OUTCOME}, copy=False)
+
     directed  = [(u, v) for u, v in dag.edges() if not dag.nodes[u].get("observed") is False]
     latent    = [n for n, d in dag.nodes(data=True) if d.get("observed") is False]
     print(f"  Directed edges : {directed}")
     print(f"  Latent nodes   : {latent}\n")
     render_graph(dag, filename="output/dowhy/pag")
 
+    # Drop the binary column — regression uses fatality_rate (continuous)
+    reg_data = data_df.drop(columns=[FCI_OUTCOME])
+
     total_effects = {}
     for treatment in TREATMENTS:
         print(f"{'='*60}")
-        print(f"Treatment: {treatment} → {OUTCOME}")
+        print(f"Treatment: {treatment} → {REG_OUTCOME}")
         print(f"{'='*60}")
-        total_effects[treatment] = identify_and_estimate(dag, data_df, treatment, OUTCOME)
+        total_effects[treatment] = identify_and_estimate(dag, reg_data, treatment, REG_OUTCOME)
         print()
 
     print(f"{'='*60}")
     print("TOTAL CAUSAL IMPACT SUMMARY")
     print(f"{'='*60}")
-    print(f"  {'Cause':<15} {'Total Effect':>14}")
-    print(f"  {'-'*30}")
+    print(f"  {'Cause':<15} {'Effect on FatalityRate':>22}")
+    print(f"  {'-'*38}")
     for treatment, effect in sorted(total_effects.items(),
                                     key=lambda x: x[1] if x[1] is not None else 0,
                                     reverse=True):
         val = f"{effect:>+.4f}" if effect is not None else "   n/a"
-        print(f"  {treatment:<15} {val:>14}")
+        print(f"  {treatment:<15} {val:>22}")

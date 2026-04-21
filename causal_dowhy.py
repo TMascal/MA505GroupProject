@@ -268,7 +268,8 @@ def identify_and_estimate(dag: nx.DiGraph, data_df: pd.DataFrame,
 
 if __name__ == "__main__":
     OUTCOME = "high_lethality"
-    TREATMENTS = ["cfit", "collision", "fire", "fuel", "mechanical",
+    TREATMENTS = ["subregion", "is_military",
+                  "cfit", "collision", "fire", "fuel", "mechanical",
                   "pilot_error", "sabotage", "shot_down", "weather"]
 
     print("Loading and encoding data...")

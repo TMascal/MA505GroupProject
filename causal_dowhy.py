@@ -47,7 +47,7 @@ from causallearn.search.ConstraintBased.FCI import fci
 from causallearn.utils.PCUtils.BackgroundKnowledge import BackgroundKnowledge
 
 
-def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> tuple[pd.DataFrame, list[str]]:
+def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Load and encode data for causal discovery.
 
     Subregion is integer-coded (0–N) so FCI treats it as a single node.
@@ -83,7 +83,8 @@ def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> t
     feature_cols = ["is_military"] + feature_cols
 
     # Subregion — integer coded
-    codes = {s: i for i, s in enumerate(sorted(df["Subregion"].unique()))}
+    subregion_names = sorted(df["Subregion"].unique())
+    codes = {s: i for i, s in enumerate(subregion_names)}
     df["subregion"] = df["Subregion"].map(codes)
     feature_cols = ["subregion"] + feature_cols
 
@@ -96,7 +97,7 @@ def prepare_data(exclude_solo: bool = True, max_samples: int | None = None) -> t
     data_df = df[feature_cols].dropna().reset_index(drop=True)
     if max_samples is not None and len(data_df) > max_samples:
         data_df = data_df.sample(max_samples, random_state=42).reset_index(drop=True)
-    return data_df, feature_cols
+    return data_df, feature_cols, subregion_names
 
 
 def build_background_knowledge() -> BackgroundKnowledge:
@@ -273,7 +274,7 @@ if __name__ == "__main__":
                   "pilot_error", "sabotage", "shot_down", "weather"]
 
     print("Loading and encoding data...")
-    data_df, feature_cols = prepare_data(exclude_solo=True, max_samples=5000)
+    data_df, feature_cols, subregion_names = prepare_data(exclude_solo=True, max_samples=5000)
     print(f"  {len(data_df)} rows, {len(feature_cols)} nodes: {feature_cols}\n")
 
     PAG_CACHE = "output/pag_kci.pkl"
@@ -331,3 +332,26 @@ if __name__ == "__main__":
                                     reverse=True):
         val = f"{effect:>+.4f}" if effect is not None else "   n/a"
         print(f"  {treatment:<15} {val:>22}")
+
+    # Per-subregion effect on high_lethality
+    # Adjustment set for subregion was empty (exogenous root), so each dummy
+    # is regressed on the outcome with no additional controls.
+    print(f"\n{'='*60}")
+    print("SUBREGION CAUSAL IMPACT (per-region dummies)")
+    print(f"{'='*60}")
+    print(f"  {'Subregion':<30} {'OLS coef':>10}  {'95% CI':>22}  {'p-value':>8}")
+    print(f"  {'-'*74}")
+    subregion_effects = {}
+    for name in subregion_names:
+        dummy = (data_df["subregion"] == subregion_names.index(name)).astype(float)
+        X = sm.add_constant(dummy)
+        result = sm.OLS(data_df[OUTCOME], X).fit()
+        coef = result.params.iloc[1]
+        pval = result.pvalues.iloc[1]
+        conf = result.conf_int().iloc[1]
+        subregion_effects[name] = coef
+        print(f"  {name:<30} {coef:>+.4f}  [{conf.iloc[0]:>+.4f}, {conf.iloc[1]:>+.4f}]  {pval:>8.4f}")
+
+    print(f"\n  Ranked by effect:")
+    for name, coef in sorted(subregion_effects.items(), key=lambda x: x[1], reverse=True):
+        print(f"    {name:<30} {coef:>+.4f}")
